@@ -1,0 +1,97 @@
+name: 'Google Cloud Artifact Registry Action for gcloud self-hosted runners'
+description: 'GitHub action to perform Gcloud Auth and set in lock file artifact registry address on self-hosted runners'
+author: 'passCulture'
+inputs:
+  workload-identity-provider:
+    description: 'GCP workload identity provider used to retrieve secrets used for artifact registry auth'
+    required: false
+  service-account:
+    description: 'GCP service-account used to retrieve secrets used for artifact registry auth'
+    required: false
+  secret-workload-identity-provider-artifact-registry:
+    description: 'GCP workload identity provider used to retrieve secrets used for artifact registry auth'
+    required: true
+  secret-service-account-artifact-registry:
+    description: 'GCP service-account used to retrieve secrets used for artifact registry auth'
+    required: true
+  gcp-zone:
+    description: 'GCP zone where the artifact registry is hosted'
+    required: true
+  gcp-project-id:
+    description: 'GCP project id where the artifact registry is hosted'
+    required: true
+  gcp-registry-id:
+    description: 'GCP registry id'
+    required: true
+  package-lock-file-path:
+    description: 'package-lock.json file path'
+    default: 'package-lock.json'
+    required: false
+  yarn-lock-file-path:
+    description: 'yarn.lock file path'
+    default: 'yarn.lock'
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: "OpenID Connect Authentication"
+      id: openid-connect-auth
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') && inputs.service-account && inputs.workload-identity-provider }}
+      uses: 'google-github-actions/auth@v1'
+      with:
+        workload_identity_provider: ${{ inputs.workload-identity-provider }}
+        service_account: ${{ inputs.service-account }}
+    - name: 'Set up Cloud SDK'
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') && inputs.service-account && inputs.workload-identity-provider  }}
+      uses: 'google-github-actions/setup-gcloud@v1'
+    - name: Get Secret
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') }}
+      id: 'secrets'
+      uses: 'google-github-actions/get-secretmanager-secrets@v1'
+      with:
+        secrets: |-
+          ARTIFACT_REGISTRY_WORKLOAD_IDENTITY_PROVIDER:${{ inputs.secret-workload-identity-provider-artifact-registry }}
+          ARTIFACT_REGISTRY_SERVICE_ACCOUNT:${{ inputs.secret-service-account-artifact-registry }}
+    - id: openid-auth
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') }}
+      name: "OpenID Connect Authentication"
+      uses: 'google-github-actions/auth@v1'
+      with:
+        workload_identity_provider: ${{ steps.secrets.outputs.ARTIFACT_REGISTRY_WORKLOAD_IDENTITY_PROVIDER }}
+        service_account: ${{ steps.secrets.outputs.ARTIFACT_REGISTRY_SERVICE_ACCOUNT }}
+    - name: 'Set up Cloud SDK'
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') }}
+      uses: 'google-github-actions/setup-gcloud@v1'
+    - name: "Check yarn.lock file existence"
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') }}
+      id: "check-yarn-lock"
+      uses: andstor/file-existence-action@v2
+      with:
+        files: "yarn.lock"
+    - name: "Check package-lock.json existence"
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') }}
+      id: "check-package-lock"
+      uses: andstor/file-existence-action@v2
+      with:
+        files: "package-lock.json"
+    - name: "yarn.lock switch to GCP artifact registry"
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') && steps.check-yarn-lock.outputs.files_exists == 'true' }}
+      shell: bash
+      run: sed -i -e "s#https://registry.yarnpkg.com/#https://${{ inputs.gcp-zone }}-npm.pkg.dev/${{ inputs.gcp-project-id }}/${{ inputs.gcp-registry-id }}/#g" ${{ inputs.yarn-lock-file-path }}
+    - name: "package-lock.json switch to GCP artifact registry"
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') && steps.check-package-lock.outputs.files_exists == 'true' }}
+      shell: bash
+      run: sed -i -e "s#https://registry.yarnpkg.com/#https://${{ inputs.gcp-zone }}-npm.pkg.dev/${{ inputs.gcp-project-id }}/${{ inputs.gcp-registry-id }}/#g" ${{ inputs.package-lock-file-path }}
+    - name: "Create .npmrc"
+      if: ${{ ! startsWith(runner.name, 'GitHub Actions') }}
+      shell: bash
+      run: |
+        cat << EOF > .npmrc
+          registry=https://${{ inputs.gcp-zone }}-npm.pkg.dev/${{ inputs.gcp-project-id }}/${{ inputs.gcp-registry-id }}/
+          //${{ inputs.gcp-zone }}-npm.pkg.dev/${{ inputs.gcp-project-id }}/${{ inputs.gcp-registry-id }}/:_authToken="$(gcloud auth print-access-token)"
+          //${{ inputs.gcp-zone }}-npm.pkg.dev/${{ inputs.gcp-project-id }}/${{ inputs.gcp-registry-id }}/:always-auth=true
+        EOF
+branding:
+  icon: 'archive'
+  color: 'gray-dark'
